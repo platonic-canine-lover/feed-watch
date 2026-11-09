@@ -29,6 +29,13 @@ import (
 )
 
 func main() {
+	// Everything runs in UTC, whatever the host's zone. Feed dates are
+	// compared with "now" to decide what is stale, and logs from a server
+	// are read next to other systems' logs: a local zone, or a daylight-saving
+	// change, would only make both harder to read. Set first, before any
+	// goroutine exists, because time.Local is not safe to change later.
+	time.Local = time.UTC
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	// After the first signal, restore the default handling, so a second
 	// Ctrl-C kills a shutdown that is taking too long instead of being ignored.
@@ -48,7 +55,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 		return 2
 	}
 
-	log := slog.New(slog.NewTextHandler(stderr, nil))
+	log := newLogger(stderr)
 	if err := requireLoopback(*listen); err != nil {
 		log.Error("refusing to start", "err", err)
 		return 2
@@ -67,6 +74,20 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	log.Info("feedwatch stopped")
 	return 0
+}
+
+// newLogger writes key=value lines with UTC timestamps. main also sets
+// time.Local to UTC; this makes run's logs UTC on its own, so tests and any
+// other caller get the same output.
+func newLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey && len(groups) == 0 {
+				a.Value = slog.TimeValue(a.Value.Time().UTC())
+			}
+			return a
+		},
+	}))
 }
 
 // serve runs the HTTP server on ln until ctx is cancelled, then shuts down

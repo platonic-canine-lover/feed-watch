@@ -15,7 +15,7 @@ $ curl -s 127.0.0.1:3102/healthz
 
 > **Status: early.** The service skeleton is built and tested (the HTTP
 > server, the health endpoint, loopback-only binding, graceful shutdown),
-> and so is the RSS parser. Fetching and checking feeds on a schedule are
+> and so are the RSS, Atom and JSON parsers. Fetching and checking feeds on a schedule are
 > being added in stages; see [Roadmap](#roadmap). This README says plainly
 > what exists and what is planned.
 
@@ -71,8 +71,7 @@ loopback only, refuses to start on any other address, and only reads.
 | Stage | | |
 |---|---|---|
 | 1 | ✅ | Skeleton: `/healthz`, loopback-only binding, graceful shutdown |
-| 2a | ✅ | RSS parser (2.0 and 1.0/RDF), with table tests, a fuzz test, a benchmark and opt-in live tests |
-| 2b | planned | Atom and JSON parsers |
+| 2 | ✅ | Parsers for RSS (2.0, 1.0/RDF), Atom (1.0, 0.3) and JSON (JSON Feed or any named list), with table tests, fuzz tests, a benchmark and opt-in live tests |
 | 3 | planned | A guarded HTTP fetcher: timeouts, byte cap, redirect rules |
 | 4 | planned | Concurrent checking with a bounded worker pool; status classification |
 | 5 | planned | Per-source history and the `/sources` API |
@@ -125,17 +124,31 @@ problem with the feed, not with this service, and folding the two together
 would make a quiet source look like a dead process to whatever supervises
 it.
 
-## Reading RSS
+## Reading feeds
 
-`internal/feeds` reads a feed only far enough to find its items' dates. It
-was checked against 443 real feed URLs; every failure left was a real one
-(HTML error pages, rate limits, Atom feeds, a feed whose dates are all
-blank).
+`internal/feeds` reads a feed only far enough to find its items' dates.
+The RSS parser was checked against 443 real feed URLs; every failure left
+was a real one (HTML error pages, rate limits, Atom feeds, a feed whose
+dates are all blank).
 
-- **Item dates only.** The channel's `lastBuildDate` is ignored: feeds
-  rebuild on a timer and stamp it whether or not anything is new.
-- **RSS 2.0 and RSS 1.0 (RDF).** Items are decoded one at a time, wherever
-  they sit, using `pubDate` or, failing that, Dublin Core `dc:date`.
+| Format | Items | Item date |
+|---|---|---|
+| RSS 2.0, 1.0 (RDF) | `<item>` | `pubDate`, else `dc:date` |
+| Atom 1.0, 0.3 | `<entry>` | `published`, else `updated` (0.3: `issued`, `modified`) |
+| JSON Feed | `items` | `date_published`, else `date_modified` |
+| Any JSON API | an array at a dot path, e.g. `data.articles` | a named field, e.g. `meta.published`; a string, or Unix seconds or milliseconds |
+
+- **Item dates only.** RSS's `lastBuildDate` and Atom's feed-level
+  `<updated>` are ignored: feeds rebuild on a timer and stamp them whether
+  or not anything is new.
+- **Published before updated.** The question is when something new
+  appeared; an Atom entry's `updated` also moves when an old post is
+  corrected.
+- **Streaming XML.** Items are decoded one at a time, wherever they sit,
+  so RSS 2.0 (items inside `<channel>`), RSS 1.0 and Atom share one loop.
+- **Everything in UTC.** Every date comes back in UTC, and a date with no
+  zone is read as UTC. The service itself runs in UTC whatever the host's
+  zone, so log timestamps and "now" never shift with daylight saving.
 - **Dates as feeds really write them.** One-digit days, no seconds, no
   weekday, two-digit years, ISO 8601. Named zones such as `EST` are
   converted by hand, because `time.Parse` silently reads an unfamiliar zone
@@ -145,7 +158,9 @@ blank).
   declared ISO-8859-1 or Windows-1252 charset, and stray control characters
   pasted in from word processors do not fail the feed.
 - **An HTML page is not a feed.** A blocked request often returns an HTML
-  page with `200 OK`; that is `ErrNotRSS`, never "a feed with no items".
+  page with `200 OK`; that is `ErrNotFeed`, never "a feed with no items".
+  So is RSS handed to the Atom parser, and JSON with no array where the
+  items should be.
 
 ## Design notes
 
@@ -167,14 +182,15 @@ context, arguments and a log writer and returns an exit status, so the
 tests can drive startup, bad usage and shutdown without starting a
 process.
 
-**Structured logs.** `log/slog`, key=value text, to stderr.
+**Structured logs.** `log/slog`, key=value text, to stderr, timestamps in
+UTC.
 
 ## Development
 
 ```sh
 go vet ./...
 go test -race ./...
-go test -run=^$ -fuzz=FuzzParseRSS -fuzztime=60s ./internal/feeds
+go test -run=^$ -fuzz=FuzzParseRSS -fuzztime=60s ./internal/feeds    # also FuzzParseAtom, FuzzParseJSON
 go test -run=^$ -bench=. -benchmem ./internal/feeds
 FEEDWATCH_LIVE=1 go test -run Live -v ./internal/feeds   # reaches the internet
 ```

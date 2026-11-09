@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,27 @@ func TestRunRefusesBadUsage(t *testing.T) {
 				t.Errorf("output %q does not mention %q", out.String(), tt.want)
 			}
 		})
+	}
+}
+
+// Log timestamps are UTC even when the machine's zone is not.
+func TestLogsAreUTC(t *testing.T) {
+	saved := time.Local
+	defer func() { time.Local = saved }()
+	zone, err := time.LoadLocation("Asia/Kathmandu") // +05:45: no chance of matching UTC by accident
+	if err != nil {
+		t.Skip("no zone database:", err)
+	}
+	time.Local = zone
+
+	var out bytes.Buffer
+	run(context.Background(), []string{"-listen", "0.0.0.0:0"}, &out)
+	m := regexp.MustCompile(`time=(\S+)`).FindStringSubmatch(out.String())
+	if m == nil {
+		t.Fatalf("no timestamp in %q", out.String())
+	}
+	if !strings.HasSuffix(m[1], "Z") {
+		t.Errorf("timestamp %s is not UTC", m[1])
 	}
 }
 

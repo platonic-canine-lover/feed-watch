@@ -31,7 +31,7 @@ func TestParseRSS(t *testing.T) {
 		name    string
 		body    string
 		want    Result
-		wantErr error // nil, ErrNotRSS, or errAny for "some error"
+		wantErr error // nil, ErrNotFeed, or errAny for "some error"
 	}{
 		{name: "RSS 2.0: newest is the latest date, not the first item", body: rss2,
 			want: Result{Items: 3, Dated: 3, Newest: at("2026-11-07T15:00:01Z")}},
@@ -78,14 +78,14 @@ func TestParseRSS(t *testing.T) {
 			want: Result{Items: 1, Dated: 1, Newest: at("2026-11-07T15:00:01Z")}},
 		{name: "an HTML block page with a 200 is not a feed",
 			body:    `<!DOCTYPE html><html><head><title>Just a moment...</title></head><body>Checking your browser</body></html>`,
-			wantErr: ErrNotRSS},
+			wantErr: ErrNotFeed},
 		{name: "an Atom feed is not RSS",
 			body:    `<feed xmlns="http://www.w3.org/2005/Atom"><entry><updated>2026-11-07T15:00:01Z</updated></entry></feed>`,
-			wantErr: ErrNotRSS},
-		{name: "JSON is not RSS", body: `{"news":[]}`, wantErr: ErrNotRSS},
-		{name: "empty body", body: "", wantErr: ErrNotRSS},
+			wantErr: ErrNotFeed},
+		{name: "JSON is not RSS", body: `{"news":[]}`, wantErr: ErrNotFeed},
+		{name: "empty body", body: "", wantErr: ErrNotFeed},
 		{name: "unsupported charset",
-			body: `<?xml version="1.0" encoding="Shift_JIS"?><rss><channel></channel></rss>`, wantErr: ErrNotRSS},
+			body: `<?xml version="1.0" encoding="Shift_JIS"?><rss><channel></channel></rss>`, wantErr: ErrNotFeed},
 		{name: "truncated mid-item keeps the items before it",
 			body: `<rss><channel><item><pubDate>Sat, 07 Nov 2026 15:00:01 GMT</pubDate></item><item><pubDate>Sun, 08`,
 			want: Result{Items: 1, Dated: 1, Newest: at("2026-11-07T15:00:01Z")}, wantErr: errAny},
@@ -117,17 +117,28 @@ func FuzzParseRSS(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, body string) {
-		res, err := ParseRSS(strings.NewReader(body))
-		if errors.Is(err, ErrNotRSS) && res != (Result{}) {
-			t.Fatalf("ErrNotRSS with a non-empty result %+v", res)
-		}
-		if res.Dated > res.Items || res.Dated < 0 {
-			t.Fatalf("Dated %d, Items %d", res.Dated, res.Items)
-		}
-		if (res.Dated == 0) != res.Newest.IsZero() {
-			t.Fatalf("Dated %d but Newest %v", res.Dated, res.Newest)
-		}
+		checkInvariants(t, func(r *strings.Reader) (Result, error) { return ParseRSS(r) }, body)
 	})
+}
+
+// checkInvariants holds every parser to the same promises, whatever the
+// input: no panic, ErrNotFeed means nothing was read, and the counts and
+// the newest date agree with each other.
+func checkInvariants(t *testing.T, parse func(*strings.Reader) (Result, error), body string) {
+	t.Helper()
+	res, err := parse(strings.NewReader(body))
+	if errors.Is(err, ErrNotFeed) && res != (Result{}) {
+		t.Fatalf("ErrNotFeed with a non-empty result %+v", res)
+	}
+	if res.Dated > res.Items || res.Dated < 0 {
+		t.Fatalf("Dated %d, Items %d", res.Dated, res.Items)
+	}
+	if (res.Dated == 0) != res.Newest.IsZero() {
+		t.Fatalf("Dated %d but Newest %v", res.Dated, res.Newest)
+	}
+	if !res.Newest.IsZero() && res.Newest.Location() != time.UTC {
+		t.Fatalf("Newest %v is not in UTC", res.Newest)
+	}
 }
 
 func BenchmarkParseRSS(b *testing.B) {

@@ -56,7 +56,33 @@ func TestLiveWordPressTopicFeed(t *testing.T) {
 // not a feed, never as a feed with nothing in it.
 func TestLiveHTMLPageIsNotAFeed(t *testing.T) {
 	resp := liveGet(t, "https://9to5mac.com/guides/elon-musk/")
-	if _, err := ParseRSS(resp.Body); !errors.Is(err, ErrNotRSS) {
-		t.Fatalf("error = %v, want ErrNotRSS", err)
+	if _, err := ParseRSS(resp.Body); !errors.Is(err, ErrNotFeed) {
+		t.Fatalf("error = %v, want ErrNotFeed", err)
 	}
+}
+
+// Atom: The Verge publishes its feeds as Atom 1.0, several items a day.
+func TestLiveAtomFeed(t *testing.T) {
+	resp := liveGet(t, "https://www.theverge.com/rss/index.xml")
+	res, err := ParseAtom(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Items == 0 || res.Dated != res.Items {
+		t.Fatalf("items %d, dated %d: every entry should carry a date", res.Items, res.Dated)
+	}
+	t.Logf("%d entries, newest %s (%.1f days ago)", res.Items, res.Newest.Format(time.RFC3339), time.Since(res.Newest).Hours()/24)
+}
+
+// JSON Feed: the format's own site publishes one.
+func TestLiveJSONFeed(t *testing.T) {
+	resp := liveGet(t, "https://www.jsonfeed.org/feed.json")
+	res, err := ParseJSON(resp.Body, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Items == 0 || res.Dated == 0 {
+		t.Fatalf("items %d, dated %d", res.Items, res.Dated)
+	}
+	t.Logf("%d items, newest %s (%.0f days ago)", res.Items, res.Newest.Format(time.RFC3339), time.Since(res.Newest).Hours()/24)
 }
